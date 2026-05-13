@@ -6,6 +6,9 @@ const cors = require('cors');
 const app = express();
 const bodyParser = require("body-parser");
 const bcrypt = require("bcryptjs");
+const jwt = require('jsonwebtoken');
+const dotenv = require('dotenv').config();
+const secretKey = "lkjasdf0)&&#kjdhhT%%2@";
 const PORT = 3000;
 
 // Middlewares
@@ -14,6 +17,26 @@ app.use(express.json());
 app.use(bodyParser.urlencoded({
   extended: true
 }));
+
+const verifyToken = (req, res, next) => {
+    // 1. Get the token from the cookie
+    const token = req.cookies.token;
+
+    if (!token) {
+        return res.status(401).json({ message: "No token provided" });
+    }
+
+    // 2. Verify the token
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(403).json({ message: "Invalid or expired token" });
+        }
+
+        // 3. Attach the user data to the request object for use in routes
+        req.user = decoded; 
+        next();
+    });
+};
 
 
 // MySQL Connection
@@ -29,7 +52,7 @@ db.connect(err => {
   console.log('✅ MySQL Connected!');
 });
 
-app.get("/", (req, res) => {
+app.get("/", verifyToken,  (req, res) => {
   db.query("select * from users", (err, result, field) => {
       if(err) {
         console.log(err);
@@ -67,7 +90,13 @@ app.post("/login", (req, res)=> {
     else{
       if(result.length > 0) {
         if(bcrypt.compareSync(req.body.password, result[0].password)){
-          res.send("User authenticated");
+          var token = jwt.sign({ username: req.body.username}, secretKey, { expiresIn: '1h'});
+          res.cookie('token', token, {
+              httpOnly: true,
+              secure: true, // Only send over HTTPS
+              sameSite: 'Strict',
+              maxAge: 3600000 // 1 hour
+          }).send({ message: "Logged in successfully" });
         }
         else{
           res.send("Incorrect credentials");
