@@ -8,7 +8,7 @@ const bodyParser = require("body-parser");
 const bcrypt = require("bcryptjs");
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv').config();
-const secretKey = "lkjasdf0)&&#kjdhhT%%2@";
+const cookieParser = require('cookie-parser');
 const PORT = 3000;
 
 // Middlewares
@@ -17,6 +17,7 @@ app.use(express.json());
 app.use(bodyParser.urlencoded({
   extended: true
 }));
+app.use(cookieParser());
 
 const verifyToken = (req, res, next) => {
     // 1. Get the token from the cookie
@@ -90,7 +91,7 @@ app.post("/login", (req, res)=> {
     else{
       if(result.length > 0) {
         if(bcrypt.compareSync(req.body.password, result[0].password)){
-          var token = jwt.sign({ username: req.body.username}, secretKey, { expiresIn: '1h'});
+          var token = jwt.sign({ username: req.body.username}, process.env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '1h'});
           res.cookie('token', token, {
               httpOnly: true,
               secure: true, // Only send over HTTPS
