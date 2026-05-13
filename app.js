@@ -2,8 +2,10 @@ const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
 
+
 const app = express();
 const bodyParser = require("body-parser");
+const bcrypt = require("bcryptjs");
 const PORT = 3000;
 
 // Middlewares
@@ -40,7 +42,12 @@ app.get("/", (req, res) => {
 
 app.post("/register", (req, res) => {
 	console.log(req.body);
-	db.query("insert into users(username, email, password) values('"+req.body.username+"', '"+req.body.email+"', '"+req.body.password+"')", (err, result, field) => {
+  var salt = bcrypt.genSaltSync(10);
+  var hashedPassword = bcrypt.hashSync(req.body.password, salt);
+  
+  const query = 'INSERT INTO users(username, email, password) VALUES(?, ?, ?)';
+  const values = [req.body.username, req.body.email, hashedPassword];
+  db.query(query, values, (err, result) => {
 		if(err) {
 			console.log(err);
 		}
@@ -51,7 +58,28 @@ app.post("/register", (req, res) => {
   });
 });
 
-
+app.post("/login", (req, res)=> {
+  console.log(req.body);
+  db.query("SELECT * FROM users WHERE username = '" + req.body.username+"'", (err, result) => {
+    if (err){
+      console.log(err);
+    }
+    else{
+      if(result.length > 0) {
+        if(bcrypt.compareSync(req.body.password, result[0].password)){
+          res.send("User authenticated");
+        }
+        else{
+          res.send("Incorrect credentials");
+        }
+      }
+      else{
+        res.send("Incorrect credentials.");
+      }
+    }
+    }
+  )
+});
 
 app.post('/api/users', (req, res) => {
   const { name, email } = req.body;
