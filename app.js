@@ -9,6 +9,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv').config();
 const cookieParser = require('cookie-parser');
+const path = require('path');
 const PORT = 3000;
 
 // Middlewares
@@ -39,7 +40,6 @@ const verifyToken = (req, res, next) => {
     });
 };
 
-
 // MySQL Connection
 const db = mysql.createConnection({
   host: 'localhost',
@@ -53,7 +53,7 @@ db.connect(err => {
   console.log('✅ MySQL Connected!');
 });
 
-app.get("/", verifyToken,  (req, res) => {
+/* app.get("/", verifyToken,  (req, res) => {
   db.query("select * from users", (err, result, field) => {
       if(err) {
         console.log(err);
@@ -62,9 +62,24 @@ app.get("/", verifyToken,  (req, res) => {
         res.send(result);
       }
   })
+}); */
+
+app.get("/api/validate", verifyToken, (req, res) => {
+  return res.status(200).json({ valid: 'true' });
+  //res.json({ valid: 'true'});
 });
 
-app.post("/register", (req, res) => {
+app.post('/api/logout', (req, res) => {
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure: true, // Should match original cookie settings
+    sameSite: 'Strict'
+  });
+  res.status(200).json({ message: "Logged out successfully" });
+});
+
+
+app.post("/api/register", (req, res) => {
 	console.log(req.body);
   var salt = bcrypt.genSaltSync(10);
   var hashedPassword = bcrypt.hashSync(req.body.password, salt);
@@ -82,9 +97,9 @@ app.post("/register", (req, res) => {
   });
 });
 
-app.post("/login", (req, res)=> {
+app.post("/api/login", (req, res)=> {
   console.log(req.body);
-  db.query("SELECT * FROM users WHERE username = '" + req.body.username+"'", (err, result) => {
+  db.query("SELECT * FROM users WHERE email = '" + req.body.email + "'", (err, result) => {
     if (err){
       console.log(err);
     }
@@ -124,7 +139,7 @@ app.post('/api/users', (req, res) => {
     });
   });
 });
-app.get('/api/users', (req, res) => {
+app.get('/api/users', verifyToken, (req, res) => {
   db.query('SELECT * FROM users ORDER BY id DESC', (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(results);
