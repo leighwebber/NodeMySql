@@ -14,7 +14,7 @@ const PORT = 3000;
 
 // Middlewares
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '200mb', extended: true}));
 app.use(bodyParser.urlencoded({
   extended: true
 }));
@@ -33,7 +33,6 @@ const verifyToken = (req, res, next) => {
         if (err) {
             return res.status(403).json({ message: "Invalid or expired token" });
         }
-
         // 3. Attach the user data to the request object for use in routes
         req.user = decoded; 
         next();
@@ -63,6 +62,21 @@ db.connect(err => {
       }
   })
 }); */
+
+app.post('/api/saveScript', async (req, res) => {
+  const { content } = req.body;
+  const values = [req.body.content];
+  const query = 'INSERT INTO scripts(content) VALUES(?)';
+  db.query(query, values, (err, result) => {
+		if(err) {
+			console.log(err);
+		}
+		else {
+			console.log ("script successfully saved.");
+			res.send("Script successfully saved.");
+		}
+  });
+});
 
 app.get("/api/validate", verifyToken, (req, res) => {
   return res.status(200).json({ valid: 'true' });
