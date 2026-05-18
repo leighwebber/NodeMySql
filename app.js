@@ -68,8 +68,7 @@ app.post('/api/saveScript', async (req, res) => {
 });
 
 app.get("/api/validate", verifyToken, (req, res) => {
-  return res.status(200).json({ valid: 'true' });
-  //res.json({ valid: 'true'});
+  return res.status(200).json({ valid: 'true', first_name: req.user.first_name, last_name: req.user.last_name, email: req.user.email });
 });
 
 app.post('/api/logout', (req, res) => {
@@ -88,7 +87,7 @@ app.post("/api/register", (req, res) => {
   var hashedPassword = bcrypt.hashSync(req.body.password, salt);
   
   const query = 'INSERT INTO user(first_name, last_name, email, password) VALUES(?, ?, ?, ?)';
-  const values = [req.body.firstname, req.body.lasttname, req.body.email, hashedPassword];
+  const values = [req.body.firstname, req.body.lastname, req.body.email, hashedPassword];
   db.query(query, values, (err, result) => {
 		if(err) {
 			console.log(err);
@@ -109,7 +108,7 @@ app.post("/api/login", (req, res)=> {
     else{
       if(result.length > 0) {
         if(bcrypt.compareSync(req.body.password, result[0].password)){
-          var token = jwt.sign({ username: req.body.username}, process.env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '1h'});
+          var token = jwt.sign({ first_name: result[0].first_name, last_name: result[0].last_name, email: result[0].email}, process.env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '1h'});
           res.cookie('token', token, {
               httpOnly: true,
               secure: true, // Only send over HTTPS
