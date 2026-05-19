@@ -50,6 +50,21 @@ const db = mysql.createConnection({
 db.connect(err => {
   if (err) throw err;
   console.log('✅ MySQL Connected!');
+  db.query(`
+    CREATE TABLE IF NOT EXISTS movement_speaker_position (
+      id          INT AUTO_INCREMENT PRIMARY KEY,
+      movement_id INT NOT NULL,
+      speaker_id  INT NOT NULL,
+      rp_x        DECIMAL(10,8) NOT NULL,
+      rp_y        DECIMAL(10,8) NOT NULL,
+      FOREIGN KEY (movement_id) REFERENCES movement(id) ON DELETE CASCADE,
+      FOREIGN KEY (speaker_id)  REFERENCES speaker(id)  ON DELETE CASCADE
+    )
+  `, err => { if (err) console.error('movement_speaker_position create error:', err); });
+
+  // Add production_id to speaker and movement if not already present (errno 1060 = duplicate column)
+  db.query('ALTER TABLE speaker  ADD COLUMN production_id INT', err => { if (err && err.errno !== 1060) console.error('speaker migration:', err); });
+  db.query('ALTER TABLE movement ADD COLUMN production_id INT', err => { if (err && err.errno !== 1060) console.error('movement migration:', err); });
 });
 
 app.post('/api/saveScript', async (req, res) => {
@@ -199,8 +214,11 @@ app.delete('/api/users/:id', (req, res) => {
  * Protected: requires a valid session cookie.
  */
 app.get('/api/speakers', verifyToken, (req, res) => {
+    const { productionId } = req.query;
+    if (!productionId) return res.status(400).json({ error: 'productionId is required.' });
     db.query(
-        'SELECT id, first_name, last_name, initials, color, rp_x, rp_y FROM speaker ORDER BY id ASC',
+        'SELECT id, first_name, last_name, initials, color, rp_x, rp_y FROM speaker WHERE production_id = ? ORDER BY id ASC',
+        [productionId],
         (err, results) => {
             if (err) {
                 console.error('GET /api/speakers error:', err);
@@ -285,10 +303,10 @@ app.put('/api/speakers', verifyToken, (req, res) => {
  * Protected: requires a valid session cookie.
  */
 app.post('/api/movements', verifyToken, async (req, res) => {
-    const { speakerId, markerId, shadowRpX, shadowRpY, endRpX, endRpY, waypoints = [] } = req.body;
+    const { speakerId, markerId, shadowRpX, shadowRpY, endRpX, endRpY, waypoints = [], speakerPositions = [], productionId } = req.body;
 
-    if (speakerId == null || markerId == null) {
-        return res.status(400).json({ error: 'speakerId and markerId are required.' });
+    if (speakerId == null || markerId == null || productionId == null) {
+        return res.status(400).json({ error: 'speakerId, markerId, and productionId are required.' });
     }
 
     // Use the promise-based wrapper so we can await inside an async route handler.
@@ -299,9 +317,9 @@ app.post('/api/movements', verifyToken, async (req, res) => {
 
         const [movResult] = await conn.query(
             `INSERT INTO movement
-                (speaker_id, marker_id, shadow_rp_x, shadow_rp_y, end_rp_x, end_rp_y)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [speakerId, markerId, shadowRpX ?? null, shadowRpY ?? null, endRpX ?? null, endRpY ?? null]
+                (speaker_id, marker_id, shadow_rp_x, shadow_rp_y, end_rp_x, end_rp_y, production_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [speakerId, markerId, shadowRpX ?? null, shadowRpY ?? null, endRpX ?? null, endRpY ?? null, productionId]
         );
 
         const movementId = movResult.insertId;
@@ -319,6 +337,14 @@ app.post('/api/movements', verifyToken, async (req, res) => {
             );
         }
 
+        if (speakerPositions.length > 0) {
+            const posRows = speakerPositions.map(sp => [movementId, sp.speakerId, sp.rX, sp.rY]);
+            await conn.query(
+                'INSERT INTO movement_speaker_position (movement_id, speaker_id, rp_x, rp_y) VALUES ?',
+                [posRows]
+            );
+        }
+
         await conn.commit();
         console.log(`Movement ${movementId} saved (${waypoints.length} waypoints).`);
         res.status(201).json({ id: movementId });
@@ -326,6 +352,47 @@ app.post('/api/movements', verifyToken, async (req, res) => {
     } catch (err) {
         await conn.rollback();
         console.error('POST /api/movements error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * GET /api/movements
+ * Returns all movements with their speaker-position snapshots, grouped by marker_id.
+ * Protected: requires a valid session cookie.
+ */
+app.get('/api/movements', verifyToken, async (req, res) => {
+    const { productionId } = req.query;
+    if (!productionId) return res.status(400).json({ error: 'productionId is required.' });
+    const conn = db.promise();
+    try {
+        const [rows] = await conn.query(`
+            SELECT m.marker_id, sp.initials, msp.rp_x, msp.rp_y
+            FROM movement m
+            JOIN movement_speaker_position msp ON m.id = msp.movement_id
+            JOIN speaker sp ON msp.speaker_id = sp.id
+            WHERE m.production_id = ?
+            ORDER BY m.marker_id, sp.initials
+        `, [productionId]);
+
+        const map = {};
+        rows.forEach(row => {
+            if (!map[row.marker_id]) map[row.marker_id] = [];
+            map[row.marker_id].push({
+                initials: row.initials,
+                rX:       parseFloat(row.rp_x),
+                rY:       parseFloat(row.rp_y),
+            });
+        });
+
+        const result = Object.entries(map).map(([markerId, speakerPositions]) => ({
+            markerId: parseInt(markerId),
+            speakerPositions,
+        }));
+
+        res.json(result);
+    } catch (err) {
+        console.error('GET /api/movements error:', err);
         res.status(500).json({ error: err.message });
     }
 });
