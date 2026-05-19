@@ -80,6 +80,9 @@ db.connect(err => {
   // errno 1060 = duplicate column, 1061 = duplicate key name
   db.query('ALTER TABLE speaker ADD COLUMN script_name VARCHAR(255)', err => { if (err && err.errno !== 1060) console.error('speaker script_name migration:', err); });
   db.query('ALTER TABLE speaker ADD UNIQUE KEY prod_initials (production_id, initials)', err => { if (err && err.errno !== 1061) console.error('speaker unique key migration:', err); });
+  db.query('ALTER TABLE production ADD COLUMN user_id INT', err => { if (err && err.errno !== 1060) console.error('production user_id migration:', err); });
+  db.query('ALTER TABLE production ADD COLUMN stage_image MEDIUMTEXT', err => { if (err && err.errno !== 1060) console.error('production stage_image migration:', err); });
+  db.query('ALTER TABLE production ADD COLUMN script_body MEDIUMTEXT', err => { if (err && err.errno !== 1060) console.error('production script_body migration:', err); });
 });
 
 app.post('/api/saveScript', async (req, res) => {
