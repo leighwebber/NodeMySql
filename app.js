@@ -65,6 +65,21 @@ db.connect(err => {
   // Add production_id to speaker and movement if not already present (errno 1060 = duplicate column)
   db.query('ALTER TABLE speaker  ADD COLUMN production_id INT', err => { if (err && err.errno !== 1060) console.error('speaker migration:', err); });
   db.query('ALTER TABLE movement ADD COLUMN production_id INT', err => { if (err && err.errno !== 1060) console.error('movement migration:', err); });
+
+  db.query(`
+    CREATE TABLE IF NOT EXISTS production (
+      id          INT AUTO_INCREMENT PRIMARY KEY,
+      user_id     INT NOT NULL,
+      name        VARCHAR(255) NOT NULL,
+      stage_image MEDIUMTEXT,
+      script_body MEDIUMTEXT,
+      FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
+    )
+  `, err => { if (err) console.error('production create error:', err); });
+
+  // errno 1060 = duplicate column, 1061 = duplicate key name
+  db.query('ALTER TABLE speaker ADD COLUMN script_name VARCHAR(255)', err => { if (err && err.errno !== 1060) console.error('speaker script_name migration:', err); });
+  db.query('ALTER TABLE speaker ADD UNIQUE KEY prod_initials (production_id, initials)', err => { if (err && err.errno !== 1061) console.error('speaker unique key migration:', err); });
 });
 
 app.post('/api/saveScript', async (req, res) => {
@@ -123,7 +138,7 @@ app.post("/api/login", (req, res)=> {
     else{
       if(result.length > 0) {
         if(bcrypt.compareSync(req.body.password, result[0].password)){
-          var token = jwt.sign({ first_name: result[0].first_name, last_name: result[0].last_name, email: result[0].email}, process.env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '1h'});
+          var token = jwt.sign({ id: result[0].id, first_name: result[0].first_name, last_name: result[0].last_name, email: result[0].email}, process.env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '1h'});
           res.cookie('token', token, {
               httpOnly: true,
               secure: true, // Only send over HTTPS
@@ -217,7 +232,7 @@ app.get('/api/speakers', verifyToken, (req, res) => {
     const { productionId } = req.query;
     if (!productionId) return res.status(400).json({ error: 'productionId is required.' });
     db.query(
-        'SELECT id, first_name, last_name, initials, color, rp_x, rp_y FROM speaker WHERE production_id = ? ORDER BY id ASC',
+        'SELECT id, script_name, first_name, last_name, initials, color, rp_x, rp_y FROM speaker WHERE production_id = ? ORDER BY id ASC',
         [productionId],
         (err, results) => {
             if (err) {
@@ -393,6 +408,118 @@ app.get('/api/movements', verifyToken, async (req, res) => {
         res.json(result);
     } catch (err) {
         console.error('GET /api/movements error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Productions
+// ---------------------------------------------------------------------------
+
+app.get('/api/productions', verifyToken, (req, res) => {
+    db.query('SELECT id, name FROM production WHERE user_id = ? ORDER BY id ASC', [req.user.id], (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
+app.post('/api/productions', verifyToken, (req, res) => {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'name is required.' });
+    db.query('INSERT INTO production (user_id, name) VALUES (?, ?)', [req.user.id, name], (err, result) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.status(201).json({ id: result.insertId, name });
+    });
+});
+
+app.get('/api/productions/:id', verifyToken, (req, res) => {
+    db.query(
+        'SELECT id, name, stage_image, script_body FROM production WHERE id = ? AND user_id = ?',
+        [req.params.id, req.user.id],
+        (err, results) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (!results.length) return res.status(404).json({ error: 'Not found.' });
+            res.json(results[0]);
+        }
+    );
+});
+
+app.put('/api/productions/:id', verifyToken, (req, res) => {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'name is required.' });
+    db.query(
+        'UPDATE production SET name = ? WHERE id = ? AND user_id = ?',
+        [name, req.params.id, req.user.id],
+        (err, result) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (!result.affectedRows) return res.status(404).json({ error: 'Not found.' });
+            res.json({ ok: true });
+        }
+    );
+});
+
+app.delete('/api/productions/:id', verifyToken, (req, res) => {
+    db.query(
+        'DELETE FROM production WHERE id = ? AND user_id = ?',
+        [req.params.id, req.user.id],
+        (err, result) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (!result.affectedRows) return res.status(404).json({ error: 'Not found.' });
+            res.json({ ok: true });
+        }
+    );
+});
+
+app.put('/api/productions/:id/image', verifyToken, (req, res) => {
+    const { image } = req.body;
+    db.query(
+        'UPDATE production SET stage_image = ? WHERE id = ? AND user_id = ?',
+        [image, req.params.id, req.user.id],
+        (err, result) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (!result.affectedRows) return res.status(404).json({ error: 'Not found.' });
+            res.json({ ok: true });
+        }
+    );
+});
+
+app.put('/api/productions/:id/script', verifyToken, (req, res) => {
+    const { scriptBody } = req.body;
+    db.query(
+        'UPDATE production SET script_body = ? WHERE id = ? AND user_id = ?',
+        [scriptBody, req.params.id, req.user.id],
+        (err, result) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (!result.affectedRows) return res.status(404).json({ error: 'Not found.' });
+            res.json({ ok: true });
+        }
+    );
+});
+
+app.post('/api/productions/:id/speakers', verifyToken, async (req, res) => {
+    const productionId = req.params.id;
+    const speakers = req.body;
+    if (!Array.isArray(speakers)) return res.status(400).json({ error: 'Body must be an array.' });
+
+    const conn = db.promise();
+    try {
+        await conn.beginTransaction();
+        for (const s of speakers) {
+            await conn.query(`
+                INSERT INTO speaker (production_id, script_name, first_name, last_name, initials, color)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    script_name = VALUES(script_name),
+                    first_name  = VALUES(first_name),
+                    last_name   = VALUES(last_name),
+                    color       = VALUES(color)
+            `, [productionId, s.scriptName || null, s.firstName || null, s.lastName || null, s.initials || null, s.color || null]);
+        }
+        await conn.commit();
+        res.json({ ok: true });
+    } catch (err) {
+        await conn.rollback();
+        console.error('POST /api/productions/:id/speakers error:', err);
         res.status(500).json({ error: err.message });
     }
 });
