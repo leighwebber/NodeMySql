@@ -470,6 +470,24 @@ app.put('/api/movements/:id', verifyToken, async (req, res) => {
     }
 });
 
+/**
+ * DELETE /api/movements/:id
+ * Removes the movement and all its waypoints and speaker-position rows.
+ * Cascades handled by foreign-key ON DELETE CASCADE on child tables.
+ * Protected: requires a valid session cookie.
+ */
+app.delete('/api/movements/:id', verifyToken, async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [result] = await db.promise().query('DELETE FROM movement WHERE id = ?', [id]);
+        if (result.affectedRows === 0) return res.status(404).json({ error: 'Movement not found.' });
+        res.json({ ok: true });
+    } catch (err) {
+        console.error('DELETE /api/movements/:id error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ---------------------------------------------------------------------------
 // Productions
 // ---------------------------------------------------------------------------
