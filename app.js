@@ -387,7 +387,8 @@ app.get('/api/movements', verifyToken, async (req, res) => {
     const conn = db.promise();
     try {
         const [rows] = await conn.query(`
-            SELECT m.marker_id, m.para_index, m.text_offset,
+            SELECT m.id, m.marker_id, m.para_index, m.text_offset,
+                   m.shadow_rp_x, m.shadow_rp_y, m.end_rp_x, m.end_rp_y,
                    sp_mover.initials AS mover_initials,
                    sp.initials, msp.rp_x, msp.rp_y
             FROM movement m
@@ -402,10 +403,15 @@ app.get('/api/movements', verifyToken, async (req, res) => {
         rows.forEach(row => {
             if (!map[row.marker_id]) {
                 map[row.marker_id] = {
-                    paraIndex:     row.para_index,
-                    textOffset:    row.text_offset,
+                    id:           row.id,
+                    paraIndex:    row.para_index,
+                    textOffset:   row.text_offset,
                     moverInitials: row.mover_initials,
-                    positions:     [],
+                    shadowRpX:    row.shadow_rp_x != null ? parseFloat(row.shadow_rp_x) : null,
+                    shadowRpY:    row.shadow_rp_y != null ? parseFloat(row.shadow_rp_y) : null,
+                    endRpX:       row.end_rp_x   != null ? parseFloat(row.end_rp_x)   : null,
+                    endRpY:       row.end_rp_y   != null ? parseFloat(row.end_rp_y)   : null,
+                    positions:    [],
                 };
             }
             map[row.marker_id].positions.push({
@@ -415,17 +421,85 @@ app.get('/api/movements', verifyToken, async (req, res) => {
             });
         });
 
+        // Fetch waypoints for all movements in this production
+        const movementIds = Object.values(map).map(m => m.id);
+        const waypointMap = {};
+        if (movementIds.length > 0) {
+            const [wRows] = await conn.query(
+                'SELECT movement_id, sequence, rp_x, rp_y FROM waypoint WHERE movement_id IN (?) ORDER BY movement_id, sequence',
+                [movementIds]
+            );
+            wRows.forEach(w => {
+                if (!waypointMap[w.movement_id]) waypointMap[w.movement_id] = [];
+                waypointMap[w.movement_id].push({ sequence: w.sequence, rX: parseFloat(w.rp_x), rY: parseFloat(w.rp_y) });
+            });
+        }
+
         const result = Object.entries(map).map(([markerId, data]) => ({
             markerId:         parseInt(markerId),
+            id:               data.id,
             paraIndex:        data.paraIndex,
             textOffset:       data.textOffset,
             moverInitials:    data.moverInitials,
+            shadowRpX:        data.shadowRpX,
+            shadowRpY:        data.shadowRpY,
+            endRpX:           data.endRpX,
+            endRpY:           data.endRpY,
+            waypoints:        waypointMap[data.id] || [],
             speakerPositions: data.positions,
         }));
 
         res.json(result);
     } catch (err) {
         console.error('GET /api/movements error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * PUT /api/movements/:id
+ * Updates a movement's shadow, end, waypoints, and/or speaker-position snapshot.
+ * Accepts any combination; only supplied fields are modified.
+ */
+app.put('/api/movements/:id', verifyToken, async (req, res) => {
+    const movementId = req.params.id;
+    const { shadowRpX, shadowRpY, endRpX, endRpY, waypoints, speakerPositions } = req.body;
+    const conn = db.promise();
+    try {
+        await conn.beginTransaction();
+
+        const setClauses = [];
+        const params     = [];
+        if (shadowRpX !== undefined) { setClauses.push('shadow_rp_x = ?'); params.push(shadowRpX); }
+        if (shadowRpY !== undefined) { setClauses.push('shadow_rp_y = ?'); params.push(shadowRpY); }
+        if (endRpX    !== undefined) { setClauses.push('end_rp_x = ?');    params.push(endRpX); }
+        if (endRpY    !== undefined) { setClauses.push('end_rp_y = ?');    params.push(endRpY); }
+        if (setClauses.length > 0) {
+            params.push(movementId);
+            await conn.query(`UPDATE movement SET ${setClauses.join(', ')} WHERE id = ?`, params);
+        }
+
+        if (waypoints !== undefined) {
+            await conn.query('DELETE FROM waypoint WHERE movement_id = ?', [movementId]);
+            if (waypoints.length > 0) {
+                const rows = waypoints.map(wp => [movementId, wp.sequence, wp.rX, wp.rY]);
+                await conn.query('INSERT INTO waypoint (movement_id, sequence, rp_x, rp_y) VALUES ?', [rows]);
+            }
+        }
+
+        if (speakerPositions !== undefined) {
+            await conn.query('DELETE FROM movement_speaker_position WHERE movement_id = ?', [movementId]);
+            if (speakerPositions.length > 0) {
+                const rows = speakerPositions.map(sp => [movementId, sp.speakerId, sp.rX, sp.rY]);
+                await conn.query('INSERT INTO movement_speaker_position (movement_id, speaker_id, rp_x, rp_y) VALUES ?', [rows]);
+            }
+        }
+
+        await conn.commit();
+        res.json({ ok: true });
+    } catch (err) {
+        await conn.rollback();
+        console.error('PUT /api/movements/:id error:', err);
         res.status(500).json({ error: err.message });
     }
 });
