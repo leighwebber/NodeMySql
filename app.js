@@ -70,7 +70,7 @@ db.connect(err => {
     CREATE TABLE IF NOT EXISTS production (
       id          INT AUTO_INCREMENT PRIMARY KEY,
       user_id     INT NOT NULL,
-      name        VARCHAR(255) NOT NULL,
+      production_name VARCHAR(255) NOT NULL,
       stage_image MEDIUMTEXT,
       script_body MEDIUMTEXT,
       FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
@@ -420,7 +420,7 @@ app.get('/api/movements', verifyToken, async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get('/api/productions', verifyToken, (req, res) => {
-    db.query('SELECT id, name FROM production WHERE user_id = ? ORDER BY id ASC', [req.user.id], (err, results) => {
+    db.query('SELECT id, production_name AS name FROM production WHERE user_id = ? ORDER BY id ASC', [req.user.id], (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
@@ -429,7 +429,7 @@ app.get('/api/productions', verifyToken, (req, res) => {
 app.post('/api/productions', verifyToken, (req, res) => {
     const { name } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required.' });
-    db.query('INSERT INTO production (user_id, name) VALUES (?, ?)', [req.user.id, name], (err, result) => {
+    db.query('INSERT INTO production (user_id, production_name) VALUES (?, ?)', [req.user.id, name], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         res.status(201).json({ id: result.insertId, name });
     });
@@ -437,7 +437,7 @@ app.post('/api/productions', verifyToken, (req, res) => {
 
 app.get('/api/productions/:id', verifyToken, (req, res) => {
     db.query(
-        'SELECT id, name, stage_image, script_body FROM production WHERE id = ? AND user_id = ?',
+        'SELECT id, production_name AS name, stage_image, script_body FROM production WHERE id = ? AND user_id = ?',
         [req.params.id, req.user.id],
         (err, results) => {
             if (err) return res.status(500).json({ error: err.message });
@@ -451,7 +451,7 @@ app.put('/api/productions/:id', verifyToken, (req, res) => {
     const { name } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required.' });
     db.query(
-        'UPDATE production SET name = ? WHERE id = ? AND user_id = ?',
+        'UPDATE production SET production_name = ? WHERE id = ? AND user_id = ?',
         [name, req.params.id, req.user.id],
         (err, result) => {
             if (err) return res.status(500).json({ error: err.message });
