@@ -4,7 +4,6 @@ const cors = require('cors');
 
 
 const app = express();
-const bodyParser = require("body-parser");
 const bcrypt = require("bcryptjs");
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv').config();
@@ -14,10 +13,7 @@ const PORT = 3000;
 
 // Middlewares
 app.use(cors());
-app.use(express.json({ limit: '200mb', extended: true}));
-app.use(bodyParser.urlencoded({
-  extended: true
-}));
+app.use(express.json({ limit: '200mb' }));
 app.use(cookieParser());
 
 const verifyToken = (req, res, next) => {
@@ -87,21 +83,6 @@ db.connect(err => {
   db.query('ALTER TABLE movement ADD COLUMN text_offset INT', err => { if (err && err.errno !== 1060) console.error('movement text_offset migration:', err); });
 });
 
-app.post('/api/saveScript', async (req, res) => {
-  const { content } = req.body;
-  const values = [req.body.content];
-  const query = 'INSERT INTO script(content) VALUES(?)';
-  db.query(query, values, (err, result) => {
-		if(err) {
-			console.log(err);
-		}
-		else {
-			console.log ("script successfully saved.");
-			res.send("Script successfully saved.");
-		}
-  });
-});
-
 app.get("/api/validate", verifyToken, (req, res) => {
   return res.status(200).json({ valid: 'true', first_name: req.user.first_name, last_name: req.user.last_name, email: req.user.email });
 });
@@ -117,7 +98,6 @@ app.post('/api/logout', (req, res) => {
 
 
 app.post("/api/register", (req, res) => {
-	console.log(req.body);
   var salt = bcrypt.genSaltSync(10);
   var hashedPassword = bcrypt.hashSync(req.body.password, salt);
   
@@ -135,8 +115,7 @@ app.post("/api/register", (req, res) => {
 });
 
 app.post("/api/login", (req, res)=> {
-  console.log(req.body);
-  db.query("SELECT * FROM user WHERE email = '" + req.body.email + "'", (err, result) => {
+  db.query("SELECT * FROM user WHERE email = ?", [req.body.email], (err, result) => {
     if (err){
       console.log(err);
     }
@@ -163,19 +142,6 @@ app.post("/api/login", (req, res)=> {
   )
 });
 
-app.post('/api/users', (req, res) => {
-  const { name, email } = req.body;
-  const sql = 'INSERT INTO user (name, email) VALUES (?, ?)';
-
-  db.query(sql, [name, email], (err, result) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.status(201).json({
-      id: result.insertId,
-      name,
-      email
-    });
-  });
-});
 app.get('/api/users', verifyToken, (req, res) => {
   db.query('SELECT * FROM user ORDER BY id DESC', (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
