@@ -83,6 +83,8 @@ db.connect(err => {
   db.query('ALTER TABLE production ADD COLUMN user_id INT', err => { if (err && err.errno !== 1060) console.error('production user_id migration:', err); });
   db.query('ALTER TABLE production ADD COLUMN stage_image MEDIUMTEXT', err => { if (err && err.errno !== 1060) console.error('production stage_image migration:', err); });
   db.query('ALTER TABLE production ADD COLUMN script_body MEDIUMTEXT', err => { if (err && err.errno !== 1060) console.error('production script_body migration:', err); });
+  db.query('ALTER TABLE movement ADD COLUMN para_index INT', err => { if (err && err.errno !== 1060) console.error('movement para_index migration:', err); });
+  db.query('ALTER TABLE movement ADD COLUMN text_offset INT', err => { if (err && err.errno !== 1060) console.error('movement text_offset migration:', err); });
 });
 
 app.post('/api/saveScript', async (req, res) => {
@@ -321,7 +323,7 @@ app.put('/api/speakers', verifyToken, (req, res) => {
  * Protected: requires a valid session cookie.
  */
 app.post('/api/movements', verifyToken, async (req, res) => {
-    const { speakerId, markerId, shadowRpX, shadowRpY, endRpX, endRpY, waypoints = [], speakerPositions = [], productionId } = req.body;
+    const { speakerId, markerId, shadowRpX, shadowRpY, endRpX, endRpY, waypoints = [], speakerPositions = [], productionId, paraIndex, textOffset } = req.body;
 
     if (speakerId == null || markerId == null || productionId == null) {
         return res.status(400).json({ error: 'speakerId, markerId, and productionId are required.' });
@@ -335,9 +337,9 @@ app.post('/api/movements', verifyToken, async (req, res) => {
 
         const [movResult] = await conn.query(
             `INSERT INTO movement
-                (speaker_id, marker_id, shadow_rp_x, shadow_rp_y, end_rp_x, end_rp_y, production_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [speakerId, markerId, shadowRpX ?? null, shadowRpY ?? null, endRpX ?? null, endRpY ?? null, productionId]
+                (speaker_id, marker_id, shadow_rp_x, shadow_rp_y, end_rp_x, end_rp_y, production_id, para_index, text_offset)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [speakerId, markerId, shadowRpX ?? null, shadowRpY ?? null, endRpX ?? null, endRpY ?? null, productionId, paraIndex ?? null, textOffset ?? null]
         );
 
         const movementId = movResult.insertId;
@@ -385,27 +387,40 @@ app.get('/api/movements', verifyToken, async (req, res) => {
     const conn = db.promise();
     try {
         const [rows] = await conn.query(`
-            SELECT m.marker_id, sp.initials, msp.rp_x, msp.rp_y
+            SELECT m.marker_id, m.para_index, m.text_offset,
+                   sp_mover.initials AS mover_initials,
+                   sp.initials, msp.rp_x, msp.rp_y
             FROM movement m
             JOIN movement_speaker_position msp ON m.id = msp.movement_id
             JOIN speaker sp ON msp.speaker_id = sp.id
+            JOIN speaker sp_mover ON m.speaker_id = sp_mover.id
             WHERE m.production_id = ?
             ORDER BY m.marker_id, sp.initials
         `, [productionId]);
 
         const map = {};
         rows.forEach(row => {
-            if (!map[row.marker_id]) map[row.marker_id] = [];
-            map[row.marker_id].push({
+            if (!map[row.marker_id]) {
+                map[row.marker_id] = {
+                    paraIndex:     row.para_index,
+                    textOffset:    row.text_offset,
+                    moverInitials: row.mover_initials,
+                    positions:     [],
+                };
+            }
+            map[row.marker_id].positions.push({
                 initials: row.initials,
                 rX:       parseFloat(row.rp_x),
                 rY:       parseFloat(row.rp_y),
             });
         });
 
-        const result = Object.entries(map).map(([markerId, speakerPositions]) => ({
-            markerId: parseInt(markerId),
-            speakerPositions,
+        const result = Object.entries(map).map(([markerId, data]) => ({
+            markerId:         parseInt(markerId),
+            paraIndex:        data.paraIndex,
+            textOffset:       data.textOffset,
+            moverInitials:    data.moverInitials,
+            speakerPositions: data.positions,
         }));
 
         res.json(result);
@@ -461,16 +476,37 @@ app.put('/api/productions/:id', verifyToken, (req, res) => {
     );
 });
 
-app.delete('/api/productions/:id', verifyToken, (req, res) => {
-    db.query(
-        'DELETE FROM production WHERE id = ? AND user_id = ?',
-        [req.params.id, req.user.id],
-        (err, result) => {
-            if (err) return res.status(500).json({ error: err.message });
-            if (!result.affectedRows) return res.status(404).json({ error: 'Not found.' });
-            res.json({ ok: true });
+app.delete('/api/productions/:id', verifyToken, async (req, res) => {
+    const productionId = req.params.id;
+    const conn = db.promise();
+    try {
+        await conn.beginTransaction();
+
+        // Verify ownership before deleting anything
+        const [[prod]] = await conn.query(
+            'SELECT id FROM production WHERE id = ? AND user_id = ?',
+            [productionId, req.user.id]
+        );
+        if (!prod) {
+            await conn.rollback();
+            return res.status(404).json({ error: 'Not found.' });
         }
-    );
+
+        // Delete child rows that reference this production (deepest dependents first)
+        await conn.query('DELETE FROM waypoint WHERE movement_id IN (SELECT id FROM movement WHERE production_id = ?)', [productionId]);
+        await conn.query('DELETE FROM movement             WHERE production_id = ?', [productionId]);
+        await conn.query('DELETE FROM speaker              WHERE production_id = ?', [productionId]);
+        await conn.query('DELETE FROM production_user_role WHERE production_id = ?', [productionId]).catch(() => {});
+
+        await conn.query('DELETE FROM production WHERE id = ?', [productionId]);
+
+        await conn.commit();
+        res.json({ ok: true });
+    } catch (err) {
+        await conn.rollback();
+        console.error('DELETE /api/productions error:', err);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.put('/api/productions/:id/image', verifyToken, (req, res) => {
