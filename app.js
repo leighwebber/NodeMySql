@@ -81,6 +81,29 @@ db.connect(err => {
   db.query('ALTER TABLE production ADD COLUMN script_body MEDIUMTEXT', err => { if (err && err.errno !== 1060) console.error('production script_body migration:', err); });
   db.query('ALTER TABLE movement ADD COLUMN para_index INT', err => { if (err && err.errno !== 1060) console.error('movement para_index migration:', err); });
   db.query('ALTER TABLE movement ADD COLUMN text_offset INT', err => { if (err && err.errno !== 1060) console.error('movement text_offset migration:', err); });
+
+  db.query(`
+    CREATE TABLE IF NOT EXISTS act (
+      id            INT AUTO_INCREMENT PRIMARY KEY,
+      production_id INT NOT NULL,
+      act_number    INT NOT NULL,
+      title         VARCHAR(255),
+      UNIQUE KEY prod_act (production_id, act_number),
+      FOREIGN KEY (production_id) REFERENCES production(id) ON DELETE CASCADE
+    )
+  `, err => { if (err) console.error('act create error:', err); });
+
+  db.query(`
+    CREATE TABLE IF NOT EXISTS scene (
+      id           INT AUTO_INCREMENT PRIMARY KEY,
+      act_id       INT NOT NULL,
+      scene_number INT NOT NULL,
+      title        VARCHAR(255),
+      image        MEDIUMTEXT,
+      UNIQUE KEY act_scene (act_id, scene_number),
+      FOREIGN KEY (act_id) REFERENCES act(id) ON DELETE CASCADE
+    )
+  `, err => { if (err) console.error('scene create error:', err); });
 });
 
 app.get("/api/validate", verifyToken, (req, res) => {
@@ -617,6 +640,171 @@ app.post('/api/productions/:id/speakers', verifyToken, async (req, res) => {
     } catch (err) {
         await conn.rollback();
         console.error('POST /api/productions/:id/speakers error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Acts & Scenes
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/productions/:id/scenes
+ * Full upsert of the act/scene structure derived from the script.
+ * Body: [{ actNumber, actTitle, scenes: [{ sceneNumber, sceneTitle }] }]
+ * Existing scene images are preserved when a scene is matched by number.
+ * Acts/scenes absent from the payload are deleted.
+ */
+app.post('/api/productions/:id/scenes', verifyToken, async (req, res) => {
+    const productionId = req.params.id;
+    const incomingActs = req.body;
+    if (!Array.isArray(incomingActs)) return res.status(400).json({ error: 'Body must be an array.' });
+
+    const conn = db.promise();
+    try {
+        await conn.beginTransaction();
+
+        const [[prod]] = await conn.query(
+            'SELECT id FROM production WHERE id = ? AND user_id = ?',
+            [productionId, req.user.id]
+        );
+        if (!prod) { await conn.rollback(); return res.status(404).json({ error: 'Not found.' }); }
+
+        const [existingActs] = await conn.query(
+            'SELECT id, act_number FROM act WHERE production_id = ?', [productionId]
+        );
+        const existingActMap = new Map(existingActs.map(a => [a.act_number, a.id]));
+
+        const responseActs = [];
+
+        for (const act of incomingActs) {
+            let actId;
+            if (existingActMap.has(act.actNumber)) {
+                actId = existingActMap.get(act.actNumber);
+                await conn.query('UPDATE act SET title = ? WHERE id = ?', [act.actTitle, actId]);
+                existingActMap.delete(act.actNumber);
+            } else {
+                const [r] = await conn.query(
+                    'INSERT INTO act (production_id, act_number, title) VALUES (?, ?, ?)',
+                    [productionId, act.actNumber, act.actTitle]
+                );
+                actId = r.insertId;
+            }
+
+            const [existingScenes] = await conn.query(
+                'SELECT id, scene_number FROM scene WHERE act_id = ?', [actId]
+            );
+            const existingSceneMap = new Map(existingScenes.map(s => [s.scene_number, s.id]));
+
+            const responseScenes = [];
+            for (const scene of act.scenes) {
+                let sceneId;
+                if (existingSceneMap.has(scene.sceneNumber)) {
+                    sceneId = existingSceneMap.get(scene.sceneNumber);
+                    await conn.query('UPDATE scene SET title = ? WHERE id = ?', [scene.sceneTitle, sceneId]);
+                    existingSceneMap.delete(scene.sceneNumber);
+                } else {
+                    const [r] = await conn.query(
+                        'INSERT INTO scene (act_id, scene_number, title) VALUES (?, ?, ?)',
+                        [actId, scene.sceneNumber, scene.sceneTitle]
+                    );
+                    sceneId = r.insertId;
+                }
+                responseScenes.push({ id: sceneId, sceneNumber: scene.sceneNumber, sceneTitle: scene.sceneTitle, image: null });
+            }
+
+            // Remove scenes that no longer exist in the script
+            for (const orphanId of existingSceneMap.values()) {
+                await conn.query('DELETE FROM scene WHERE id = ?', [orphanId]);
+            }
+
+            responseActs.push({ id: actId, actNumber: act.actNumber, actTitle: act.actTitle, scenes: responseScenes });
+        }
+
+        // Remove acts (and their scenes via CASCADE) that no longer exist in the script
+        for (const orphanId of existingActMap.values()) {
+            await conn.query('DELETE FROM act WHERE id = ?', [orphanId]);
+        }
+
+        await conn.commit();
+        res.json({ ok: true, acts: responseActs });
+    } catch (err) {
+        await conn.rollback();
+        console.error('POST /api/productions/:id/scenes error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * GET /api/productions/:id/scenes
+ * Returns the full act/scene hierarchy for a production, including any
+ * uploaded scene images.
+ */
+app.get('/api/productions/:id/scenes', verifyToken, async (req, res) => {
+    const productionId = req.params.id;
+    const conn = db.promise();
+    try {
+        const [[prod]] = await conn.query(
+            'SELECT id FROM production WHERE id = ? AND user_id = ?',
+            [productionId, req.user.id]
+        );
+        if (!prod) return res.status(404).json({ error: 'Not found.' });
+
+        const [acts] = await conn.query(
+            'SELECT id, act_number, title FROM act WHERE production_id = ? ORDER BY act_number',
+            [productionId]
+        );
+
+        const result = [];
+        for (const act of acts) {
+            const [scenes] = await conn.query(
+                'SELECT id, scene_number, title, image FROM scene WHERE act_id = ? ORDER BY scene_number',
+                [act.id]
+            );
+            result.push({
+                id:       act.id,
+                actNumber: act.act_number,
+                actTitle:  act.title,
+                scenes:    scenes.map(s => ({
+                    id:          s.id,
+                    sceneNumber: s.scene_number,
+                    sceneTitle:  s.title,
+                    image:       s.image,
+                })),
+            });
+        }
+
+        res.json(result);
+    } catch (err) {
+        console.error('GET /api/productions/:id/scenes error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * PUT /api/scenes/:id/image
+ * Saves (or replaces) the uploaded image for a single scene.
+ * Ownership is verified by tracing scene → act → production → user.
+ */
+app.put('/api/scenes/:id/image', verifyToken, async (req, res) => {
+    const sceneId = req.params.id;
+    const { image } = req.body;
+    if (!image) return res.status(400).json({ error: 'image is required.' });
+
+    try {
+        const [[scene]] = await db.promise().query(`
+            SELECT s.id FROM scene s
+            JOIN act a        ON a.id = s.act_id
+            JOIN production p ON p.id = a.production_id
+            WHERE s.id = ? AND p.user_id = ?
+        `, [sceneId, req.user.id]);
+
+        if (!scene) return res.status(404).json({ error: 'Not found.' });
+
+        await db.promise().query('UPDATE scene SET image = ? WHERE id = ?', [image, sceneId]);
+        res.json({ ok: true });
+    } catch (err) {
+        console.error('PUT /api/scenes/:id/image error:', err);
         res.status(500).json({ error: err.message });
     }
 });
