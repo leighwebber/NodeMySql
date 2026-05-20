@@ -1,12 +1,14 @@
 const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
+const { Resend } = require('resend');
 
 
 const app = express();
 const bcrypt = require("bcryptjs");
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv').config();
+const resend = new Resend(process.env.RESEND_API_KEY);
 const cookieParser = require('cookie-parser');
 const path = require('path');
 const PORT = 3000;
@@ -806,6 +808,41 @@ app.put('/api/scenes/:id/image', verifyToken, async (req, res) => {
     } catch (err) {
         console.error('PUT /api/scenes/:id/image error:', err);
         res.status(500).json({ error: err.message });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Feedback
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/feedback
+ * Sends a feedback email from the logged-in user.
+ * Body: { message: string }
+ * From: noreply@lwebber.ca (Reply-To: user's email so replies go to them)
+ * To: leighwebber@live.com
+ */
+app.post('/api/feedback', verifyToken, async (req, res) => {
+    const { message } = req.body;
+    if (!message || !message.trim()) {
+        return res.status(400).json({ error: 'message is required.' });
+    }
+
+    const senderName  = [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || req.user.email;
+    const senderEmail = req.user.email;
+
+    try {
+        await resend.emails.send({
+            from:     'PlayBlocker Feedback <noreply@lwebber.ca>',
+            to:       ['leighwebber@live.com'],
+            reply_to: senderEmail,
+            subject:  'PlayBlocker feedback',
+            text:     `From: ${senderName} <${senderEmail}>\n\n${message.trim()}`,
+        });
+        res.json({ ok: true });
+    } catch (err) {
+        console.error('POST /api/feedback error:', err);
+        res.status(500).json({ error: 'Failed to send email.' });
     }
 });
 
